@@ -93,14 +93,13 @@ func splitTaint(taint string) (string, string, string) {
 	return taint, "", ""
 }
 
-func removeNodesWithTaints(nodeList corev1.NodeList, taints string) corev1.NodeList {
+func removeNodesWithTaints(nodeList corev1.NodeList, taints []string) corev1.NodeList {
 	var tempNodeList corev1.NodeList
 	var key, value, effect string
 	isTainted := false
-	taintsSlice := strings.Split(taints, ",")
 
 	for _, node := range nodeList.Items {
-		for _, taint := range taintsSlice {
+		for _, taint := range taints {
 			key, value, effect = splitTaint(taint)
 			for _, t := range node.Spec.Taints {
 				if t.Key == key && t.Value == value && t.Effect == corev1.TaintEffect(effect) {
@@ -121,6 +120,39 @@ func removeNodesWithTaints(nodeList corev1.NodeList, taints string) corev1.NodeL
 	return tempNodeList
 }
 
+func addNodesWithTaints(nodeList corev1.NodeList, taints []string) corev1.NodeList {
+	var tempNodeList corev1.NodeList
+	var key, value, effect string
+
+	for _, node := range nodeList.Items {
+	outer:
+		for _, taint := range taints {
+			key, value, effect = splitTaint(taint)
+			for _, t := range node.Spec.Taints {
+				if t.Key == key && t.Value == value && t.Effect == corev1.TaintEffect(effect) {
+					tempNodeList.Items = append(tempNodeList.Items, node)
+					break outer
+				}
+			}
+		}
+	}
+
+	return tempNodeList
+}
+
+func splitTaintsByAddRemove(taints string) (taintsToAdd []string, taintsToRemove []string) {
+	taintSlice := strings.Split(taints, ",")
+	for _, taint := range taintSlice {
+		trimmedTaint := strings.TrimSpace(taint)
+		if strings.HasPrefix(trimmedTaint, "!") {
+			taintsToRemove = append(taintsToRemove, trimmedTaint)
+		} else {
+			taintsToAdd = append(taintsToAdd, trimmedTaint)
+		}
+	}
+	return taintsToAdd, taintsToRemove
+}
+
 func getPodsAndNodes(clientset kubernetes.Interface, podLabels, nodeLabels, nodeTaints, namespaceLabels, namespace string) (*corev1.PodList, *corev1.NodeList) {
 	nodeList, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
 		LabelSelector: nodeLabels,
@@ -132,7 +164,15 @@ func getPodsAndNodes(clientset kubernetes.Interface, podLabels, nodeLabels, node
 
 	if nodeTaints != "" {
 		taintedNodes := *nodeList
-		taintedNodes = removeNodesWithTaints(taintedNodes, nodeTaints)
+		taintsToAdd, taintsToRemove := splitTaintsByAddRemove(nodeTaints)
+
+		if len(taintsToAdd) > 0 {
+			taintedNodes = addNodesWithTaints(taintedNodes, taintsToAdd)
+		}
+
+		if len(taintsToRemove) > 0 {
+			taintedNodes = removeNodesWithTaints(taintedNodes, taintsToRemove)
+		}
 		if err != nil {
 			fmt.Printf("Error removing tained Nodes: %v\n", err)
 			os.Exit(2)
